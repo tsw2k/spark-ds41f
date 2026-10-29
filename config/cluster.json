@@ -59,6 +59,11 @@
         "{checkout}/cache",
         "/cache",
         "rw"
+      ],
+      [
+        "{checkout}/site/overlay/vllm/vllm/models/deepseek_v4_1/nvidia/model_state.py",
+        "/opt/spark-ds41f/candidate/vllm/vllm/models/deepseek_v4_1/nvidia/model_state.py",
+        "ro"
       ]
     ]
   },
