@@ -5,6 +5,9 @@ series on `next-candidate` (head c579b3fe1). This folder is that candidate: its 
 manifest, lock, arms, image, release tests and the specs that qualify it. It is modelled on
 spark-ds41f-1025's [rc6/](../2026-10-25-spark-ds41f-candidate/rc6).
 
+**Released (2026-10-30):** candidate 14 is spark-ds41f-1030 on the ring
+([below](#candidate-14-rc14), [release notes](release-notes.md)); the triangle is not qualified on it.
+
 **Status (2026-10-26, CET):** candidate 7's image built on dgx4; its release tests passed on dgx4
 (6,417 passed, 163 skipped, 0 failed). **Candidate 8** ([below](#candidate-8-rc8)) adds 0533, the
 MoE output fix; its image is built and its release tests show two order-dependent test failures,
@@ -638,3 +641,182 @@ branch (#619) until they start and pass their A/B.
   candidate 12: the image, the release tests, candidate 10's checks on candidate 10 and
   candidate 12, GLP's probes, and the lean suite with the stall probe on candidate 10,
   candidate 12, candidate 10 again.
+- **Result (run `candidate-12-tp4`, 2026-10-29): qualified on the ring.**
+  - Release tests (dgx4, image `sha256:2d9c2cc6`): 6,686 passed, 163 skipped, 0 failed.
+  - Bits: every digest equals candidate 10's (determinism with and without logprobs, 16K,
+    greedy, seeded sampled, prompt logprobs, images, CED cross-shape, control spellings and
+    controls); model behaviour 64/64 greedy responses identical, teacher-forced KL 0 over
+    16,384 positions, acceptance 2.263 on both. One controls digest differs again,
+    `penalties-sampled/c8`: candidate 12 gave `fb36e3be` (candidate 10's in its own
+    qualification) and candidate 10 gave `44f3b309` on this boot; the scenario does not repeat
+    across boots, so it is not a bit change. Seeded sampling at c8 is batch-variant on both
+    builds, as before.
+  - GLP: the dual-serving probe passes every check (both names served, steering moves all 8
+    prompts, mixed batches and the prefix cache keep each name's text, completions and
+    tokenize; beam search refused with 400). AdvBench (520 prompts, 256 tokens): replies with
+    no refusal phrase 2.5% stock, 51.2% steered; judged compliant 1.4% / 38.9%.
+  - Speed against candidate 10 (paired verdict; repeat candidate 10 to candidate 10 again):
+
+    | Metric | Candidate 12 | Change | ±95% | Repeat |
+    | --- | ---: | ---: | ---: | ---: |
+    | engine grid, decode geometric mean (20 shapes) | | 0.25-1.14% faster | 0.15% | -0.88% |
+    | c1 decode tok/s, paired | 79.14 | +0.69-0.91% | 0.08% | +0.21% |
+    | c8 decode tok/s, paired | 24.87 | +0.80-0.86% | 0.50% | +0.03% |
+    | c1 TTFT, paired | 0.124 s | level | 0.45% | |
+    | prefill 32K tok/s | 7,317 | level | 1.24% | |
+    | prefill 131K tok/s, alone | 7,383 | -0.8% | 0.48% | |
+    | 131K prefill beside 11 decoding streams and five 500-token requests | 6,270 tok/s | -9.0% | 0.54% | +0.09% |
+    | those short requests' TTFT p50 / max | 3.55 / 4.97 s | 3.1x / 3.4x sooner | 2.4% | |
+
+    Ranges are against each candidate 10 boot; the second candidate 10 boot ran its grid
+    0.88% faster than the first. The 131K prefill beside short requests is yield (0545) doing
+    what it is for: each short request takes one step for its prefill and one for its held
+    first token, about 10 steps of the long prompt's 19 s, and with nothing short waiting it
+    schedules as before (level at 15 of 16 streams in `c10-yield-depth`). The lone 131K
+    prefill's 0.8% has nothing to yield to; it is in 0541-0544 or the IKET patches, not yet
+    bisected. c16, c8 and c4 distinct streams, the TTFT trace, startup and sink counters are
+    level.
+  - Memory, found after the result above: model loading took 72.72 GiB a rank on candidate 12
+    against 71.67 GiB on candidate 10 (+1.05 GiB; idle free memory 0.6-0.7 GiB lower a
+    node), and at TP3 (#668, 983K context) the host's low point fell from 5.24-5.35 GiB to
+    3.45-3.92 GiB. 0563 gave the 2-bit scale codes their own buffer, half the 4-bit codes'
+    size, for every expert, and kept the 4-bit codes for every expert too. The ring's
+    lowest free memory in a boot is still 19.4 GiB, so candidate 12 is promoted there (owner, 2026-10-29); the triangle's margin
+    at 983K needs candidate 13.
+- **Release comparison** ([rc12/release-tp4.json](rc12/release-tp4.json), run
+  `candidate-12-release-tp4`, about 3.5 h; [rc12/release-tp3.json](rc12/release-tp3.json) after
+  the triangle is re-cabled): suites `release`, `single-stream` and `sampled`, arms candidate 12,
+  spark-ds41f-1025, candidate 12 again, `startup_memory` on every boot. With the TP3
+  qualification ([rc12/candidate-tp3.json](rc12/candidate-tp3.json)) these are what promotion
+  needs.
+
+## Candidate 13 ([rc13/](rc13))
+
+Candidate 12 with the 2-bit expert scale codes in the 4-bit codes' buffer, for candidate 10's
+memory with candidate 12's decode: the triangle's candidate (owner, 2026-10-29), candidate 12
+staying on the ring.
+
+- **Series:** candidate 12's plus 0566 (vLLM `scale-codes-one-form`, head 13793229f;
+  [rc13/vllm/series](rc13/vllm/series), [rc13/make_series.py](rc13/make_series.py)): patch
+  head `c1965d8e`, tree `e1a74af7` (the build's `git am` reproduces it).
+
+  | Patch | Change | Why |
+  | --- | --- | --- |
+  | 0566 | A narrow expert's 2-bit codes go in the first `block_N` bytes of each of its rows of the 4-bit codes' buffer (zeros after); the grouped GEMM reads them through a uint8 view of that storage, `[rows, 2 * block_N]`. A wide expert keeps its 4-bit rows | 0563 kept a second buffer, half the 4-bit codes' size, for every expert: about 1 GiB a rank at TP4 |
+
+  Each narrow load is still one contiguous `block_N`-byte row, so the bytes read and the
+  expanded scale words are unchanged; the CPU tests check that both views share one storage of
+  the 4-bit codes' size and that each expert's rows hold one form.
+- **Arms:** candidate 12's on candidate 13's image (`spark-ds41f:19f2c20ed4d6-next-13`) and
+  lock, at the triangle ([rc13/rc-tp3.json](rc13/rc-tp3.json), `-dev`, `-6144`) and the ring
+  ([rc13/rc-tp4.json](rc13/rc-tp4.json), `-dev`); [rc13/source.json](rc13/source.json) adds the
+  `tilelang-expert-scale-codes-one-buffer` capability.
+- **Release tests:** `release_tests.py check` for 19f2c20ed..13793229f: 169 selected, 114 gate,
+  55 excluded, 0 problems ([rc13/release-tests-gate-manifest.json](rc13/release-tests-gate-manifest.json),
+  [rc13/bundles/release-tests](rc13/bundles/release-tests)); the GPU bit-match of mixed narrow
+  and wide experts against the uncoded GEMM (`test_deepseek_v41_tilelang_moe.py`) is a gate
+  file.
+- **Qualification:** candidate 12's, for candidate 13 against candidate 12 —
+  [rc13/candidate-tp3.json](rc13/candidate-tp3.json) and
+  [rc13/release-tp3.json](rc13/release-tp3.json) on the triangle, and
+  [rc13/candidate-tp4.json](rc13/candidate-tp4.json) on the ring (the image, the release tests,
+  the checks and memory snapshot on both builds, GLP's probes, the lean suite on candidate 12,
+  candidate 13, candidate 12 again). It passes with every digest equal to candidate 12's, speed
+  level, and model loading about 1 GiB a rank below candidate 12's at TP4 (candidate 10's
+  71.67 GiB) and about 1.4 GiB at TP3.
+- **On the ring: a fix check, not a requalification** (owner, 2026-10-29: ship 0566 at TP4 if it
+  works, the full qualification at TP3). [rc13/fix-tp4.json](rc13/fix-tp4.json), run
+  `candidate-13-fix-tp4`, about 45 min: the image; the two scale-code test files on dgx4
+  ([rc13/bundles/scale-codes](rc13/bundles/scale-codes), the GPU bit-match of mixed narrow and wide
+  experts against the uncoded GEMM); one candidate 13 boot with the determinism gate (with and
+  without logprobs), the 16K SP prompt, the memory snapshot and the startup lines. It works if
+  every digest equals candidate 12's in `candidate-12-tp4` (the same checks on its own boot) and
+  model loading is about 1 GiB a rank lower (candidate 12: 72.72 GiB). Candidate 12's release comparison
+  against 1025 (`candidate-12-release-tp4`) then stands for candidate 13 on the ring.
+- **Fix check result (2026-10-29, 21:01-21:30 UTC, with the repeat boot
+  `candidate-13-fix-tp4-again`):** it works. The scale-code bundle passed on dgx4 (117 tests).
+  The logprob, greedy and 16K digests equal candidate 12's (`fe2461d8`, `c9cf9dbe`,
+  `fcd34fd2`). Model loading took 71.67 GiB on both boots (candidate 12: 72.72), with the KV
+  cache unchanged at 11,554,122 tokens, so the gigabyte is headroom (dgx1 had 21.3 GiB
+  available at ready). The startup lines are normal.
+
+## Candidate 14 ([rc14/](rc14))
+
+Candidate 13 with the Engram host hash fixed for a prefilling request that carries drafts, the
+engine stop of [#677](https://github.com/christopherowen/spark-ds41f/issues/677): the 1030
+candidate (owner, 2026-10-29: fold the fix in before promoting).
+
+- **Series:** candidate 13's plus 0567 (vLLM `engram-drafted-prefill`, head d5df88d83;
+  [rc14/vllm/series](rc14/vllm/series), [rc14/make_series.py](rc14/make_series.py)): patch
+  head `b6de07aa`, tree `ea1281f8` (the build's `git am` reproduces it).
+
+  | Patch | Change | Why |
+  | --- | --- | --- |
+  | 0567 | `_early_engram_ids` hashes on the host only the prefill rows of requests without drafts and leaves a drafted request's rows `UNKNOWN` for the GPU; drafts out of order leave the whole step to the GPU instead of raising | The scheduler pads a prompt with one token left (cached up to its last token) to the verification width with placeholder drafts, so a request can be prefilling and verifying at once; the old check raised on it and stopped every worker |
+
+  The worker sorts verifying requests first and adaptive verification keeps their total row
+  count, so a request after them starts at the host's row and its early IDs stay exact. The
+  host IDs are a prefetch of the GPU's hash, so the output does not change. CPU tests:
+  `tests/kernels/test_deepseek_v41_engram_host_placement.py` (5).
+- **Arms:** candidate 13's on candidate 14's image (`spark-ds41f:19f2c20ed4d6-next-14`) and
+  lock ([rc14/rc-tp4.json](rc14/rc-tp4.json), `-dev`); [rc14/source.json](rc14/source.json)
+  adds the `engram-host-hash-drafted-prefill` capability.
+- **Fix check:** [rc14/fix-tp4.json](rc14/fix-tp4.json), run `candidate-14-fix-tp4`, about an
+  hour. It builds the image, then runs [rc14/mixed_load.py](rc14/mixed_load.py) for 5 minutes
+  on each boot: 4 agents growing from 50K words by 20K a turn, and 8 chat streams that each
+  ask every question twice (the second cached up to its last token). The boots are:
+  - candidate 13, where the load should stop the engine;
+  - candidate 14, with the determinism gate, the 16K prompt, the memory snapshot and the
+    startup lines;
+  - candidate 14 again, with the memory snapshot and the startup lines.
+
+  Candidate 14 works if the load runs clean on both of its boots, every digest equals
+  candidate 13's, and model loading stays at 71.67 GiB. Candidate 12's release comparison
+  against 1025 then stands for candidate 14 on the ring.
+- **Result (run `candidate-14-fix-tp4`, 2026-10-29): works.** The image
+  (`sha256:7918fd6145b5`) built on dgx4 at 22:19 UTC from deployment commit `d7feb2d9` and was
+  copied dgx4 to dgx3, dgx2 and dgx1; the same ID on every node.
+  - The load ran clean on candidate 13 too (150 requests, 0 failed): the trigger is not
+    reproduced on the ring, and the fix stands on the scheduler's padding path, which reaches the
+    check whenever a prompt with one token left is padded with placeholder drafts (#677, asked of
+    its reporter).
+  - Candidate 14: 150 requests on each boot, 0 failed, prompts up to 311K tokens; every digest
+    equals candidate 13's; model loading 71.67 GiB a rank on both boots; 277 TileLang calls
+    prepared, init 28-37 s.
+- **Promoted as spark-ds41f-1030** on the ring (owner, 2026-10-29: "Ship 1030 from candidate
+  14"): image `spark-ds41f:1030` (this build, retagged), recipe and lock frozen in
+  [releases/spark-ds41f-1030](../../releases/spark-ds41f-1030/), baseline
+  [2026-10-30-spark-ds41f-1030](../../manifests/baselines/2026-10-30-spark-ds41f-1030.json),
+  [release notes](release-notes.md).
+
+## spark-ds41f-1030 on the triangle
+
+The owner re-cabled to the dgx1-dgx2-dgx3 triangle on 2026-10-30 for the full TP3 qualification
+of the release (dgx1 and dgx3 back on their `40-cx7.yaml.triangle` addressing; every cable path
+passes a 9000-byte ping and each RoCE GID 3 holds its address). The arm is the frozen release
+at the triangle, [rc14/rc-tp3.json](rc14/rc-tp3.json): the 6,144-token budget the recipe has
+carried since 2026-10-27, which this release qualifies. The image is already on every node.
+
+- **Checks** ([rc14/candidate-tp3.json](rc14/candidate-tp3.json), run `candidate-14-tp3`, about
+  50 min): GLP's dual-serving probe and AdvBench on the release; then candidate 13's checks
+  (determinism with and without logprobs, 16K, c8 and c4 distinct streams, control spellings
+  and controls, the TTFT trace, memory, sink counters and probes, prompt logprobs, seeded
+  sampling, images, CED cross-shape, startup lines) on three boots: spark-ds41f-1025 at its
+  8,192 budget, candidate 14 at 8,192 ([rc14/rc-tp3-8192.json](rc14/rc-tp3-8192.json); one budget
+  with 1025, so digests compare build to build) and the release at 6,144.
+- **Release comparison** ([rc14/release-tp3.json](rc14/release-tp3.json), run
+  `candidate-14-release-tp3`, about 4 h): suites `release-tp3`, `single-stream` and `sampled` on
+  the release, spark-ds41f-1025, the release again. 1025's TP3 record has no request tables, so
+  1025 is measured again.
+
+It qualifies if the 8,192 digests equal 1025's apart from CED-affected prompts (0526), the
+release's checks pass, the host's lowest MemAvailable stays above the 5 GiB startup guard, and
+no verdict is worse than 1025's.
+
+**Result: qualified 2026-10-30.** The checks pass: the 8,192 digests equal 1025's apart from CED's
+cross-shape prompt, 6,144's equal 8,192's, and dgx1's lowest MemAvailable is 7.29 GiB (1025:
+6.23). Every verdict is better or the same except two: the 131K prefill beside 3 and 6 streams
+with short requests waiting is 4.61% and 3.70% slower (the yield and the 6,144 budget), while
+those requests' first token p50 falls from 16.6 to 2.0 s and from 18.3 to 9.6 s. The owner
+accepted the trade. The numbers are in [release-notes.md](release-notes.md); the suites are
+[manifests/suites/2026-10-30-spark-ds41f-1030-tp3](../../manifests/suites/2026-10-30-spark-ds41f-1030-tp3/).
